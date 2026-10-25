@@ -209,3 +209,56 @@ def test_expand_no_section_returns_chunk_range_for_mid_section_chunk(monkeypatch
     assert data["start_line"] == chunk.start_line
     assert data["end_line"] == expected_end
     assert data["content"] == "\n".join(file_lines[chunk.start_line - 1 : expected_end])
+
+
+@pytest.mark.parametrize("json_output", [False, True], ids=["plain", "json"])
+@pytest.mark.parametrize(
+    ("lines_arg", "expected_start", "expected_end"),
+    [(0, 5, 5), (1, 4, 6)],
+    ids=["lines-0", "lines-1"],
+)
+def test_expand_no_section_explicit_lines_take_precedence(
+    monkeypatch, tmp_path, lines_arg, expected_start, expected_end, json_output
+) -> None:
+    # The chunk covers only line 5, mid-section under "### 10:01" (line 3), so the section
+    # view (3-5), the implicit chunk-only view (5-5), and the --lines 1 view (4-6) all differ.
+    source = tmp_path / "2026-09-24.md"
+    source.write_text(DAILY_LOG, encoding="utf-8")
+
+    class FakeStore:
+        def __init__(self, **_kwargs):
+            pass
+
+        def query(self, filter_expr: str):
+            return [
+                {
+                    "source": str(source),
+                    "start_line": 5,
+                    "end_line": 5,
+                    "heading": "10:01",
+                    "heading_level": 3,
+                }
+            ]
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli_module, "resolve_config", lambda _overrides=None: MemSearchConfig())
+    monkeypatch.setattr(store_module, "MilvusStore", FakeStore)
+
+    args = ["expand", "abc123", "--no-section", "--lines", str(lines_arg)]
+    if json_output:
+        args.append("--json-output")
+    result = CliRunner().invoke(cli, args)
+
+    assert result.exit_code == 0, result.output
+    expected_content = "\n".join(DAILY_LOG.splitlines()[expected_start - 1 : expected_end])
+    if json_output:
+        data = json.loads(result.output)
+        assert data["start_line"] == expected_start
+        assert data["end_line"] == expected_end
+        assert data["content"] == expected_content
+    else:
+        assert f"lines {expected_start}-{expected_end}" in result.output
+        assert expected_content in result.output
+    assert "### 10:01" not in result.output
